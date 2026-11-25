@@ -80,12 +80,55 @@ const REV_TYPES=['ITV','Revisión taller','Cambio de aceite','Neumáticos','Segu
 const PLACEHOLDER='¿Quién eres?';
 const MAX={ret:5,edit:5,tk:3};
 
+/* ===== Cuenta única con la app de Fichaje: mismo email y PIN para todo =====
+   La app de Fichaje (mismo dominio) deja aquí su sesión. Las acciones de empleado se envían
+   al servidor de Fichaje, que comprueba quién es y las pasa a Coches en su nombre.
+   El panel Admin de Coches no cambia: sigue con su propio PIN de administrador. */
+const EMBEBIDA=/[?&]embebida=1/.test(location.search)||window.top!==window.self;
+/* Opcional: dirección del servidor de Fichaje (la de config.js de Fichaje). Si se rellena, el login funciona
+   aunque se abra Coches directamente (por ejemplo, con el QR en un iPhone) sin haber pasado por Fichaje. */
+const FICHAJE_API_FIJA='';
+const CUENTA={get t(){try{return localStorage.getItem('fichaje_token')}catch(e){return null}},
+  get api(){try{return localStorage.getItem('fichaje_api')||FICHAJE_API_FIJA||null}catch(e){return FICHAJE_API_FIJA||null}},
+  get home(){try{return localStorage.getItem('fichaje_url')}catch(e){return null}}};
+let YO=null,YO_MSG='';
+const fichaje=async q=>{const r=await fetch(CUENTA.api,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(q)});return r.json()};
+async function cuentaInit(){
+  YO=null;YO_MSG='';if(!CUENTA.t||!CUENTA.api)return;
+  try{const r=await fichaje({action:'cochesYo',token:CUENTA.t});
+    if(!r.ok){YO_MSG=r.error||'';if(r.codigo==='SESION'){try{localStorage.removeItem('fichaje_token')}catch(e){}}return}
+    YO=r.nombre||null;YO_MSG=r.mensaje||''}
+  catch(e){YO_MSG='No se pudo comprobar tu sesión. Revisa la conexión.'}
+}
+function gate(){
+  const v=$('#view');
+  if(CUENTA.t&&CUENTA.api&&YO_MSG&&!/sesi[oó]n|conexi[oó]n/i.test(YO_MSG)){
+    v.innerHTML=`<div class="card"><h2 style="margin-top:0">👤 Falta tu nombre en Coches</h2><div class="msg e">${esc(YO_MSG)}</div></div>`;return}
+  if(!CUENTA.api){
+    v.innerHTML=`<div class="card"><h2 style="margin-top:0">🔐 Entra con tu cuenta</h2><p>Abre la app de <b>Fichaje</b>, entra con tu email y PIN y pulsa <b>Coches</b>.</p>${CUENTA.home?`<a class="btn" href="${esc(CUENTA.home)}#coches">Abrir Fichaje</a>`:''}</div>`;return}
+  v.innerHTML=`<div class="card"><h2 style="margin-top:0">🔐 Entra con tu cuenta</h2><small class="hint">El mismo email y PIN que usas para fichar.</small>
+    ${YO_MSG?`<div class="msg e">${esc(YO_MSG)}</div>`:''}
+    <label>Email</label><input id="lg-e" type="email" inputmode="email" autocomplete="username">
+    <label>PIN</label><input id="lg-p" type="password" inputmode="numeric" maxlength="6" autocomplete="current-password">
+    <div id="lgm"></div><button class="btn" onclick="run(this,'#lgm',entrarCuenta)">Entrar</button></div>`;
+}
+async function entrarCuenta(){
+  const e=$('#lg-e').value.trim(),p=$('#lg-p').value.trim();if(!e||!p)throw new Error('Escribe tu email y tu PIN.');
+  const r=await fichaje({action:'login',email:e,pin:p});if(!r.ok)throw new Error(r.error||'Email o PIN incorrectos.');
+  try{localStorage.setItem('fichaje_token',r.token)}catch(x){}
+  await cuentaInit();go(S.tab);
+}
+
 /* ===== Capa de servicios (todo pasa por el servidor, que valida) ===== */
 const api=async(url,opt)=>{if(!/^https:\/\//.test(API_URL))throw new Error('Falta pegar la URL de Apps Script en API_URL');const r=await fetch(url,opt),j=await r.json();if(j&&j.error)throw new Error(j.error);return j};
 /* PIN personal: se recuerda en este móvil (en incógnito se olvida al cerrar). Lo comprueba siempre el servidor. */
 let PINS={};try{PINS=JSON.parse(localStorage.getItem('epins')||'{}')}catch(e){}
 const savePins=()=>{try{localStorage.setItem('epins',JSON.stringify(PINS))}catch(e){}};
 const post=async q=>{
+  if(YO&&q.name&&q.epin&&!q.pin){   /* acción de empleado: va por Fichaje con la cuenta única */
+    const r=await fichaje({action:'coches',token:CUENTA.t,q});
+    if(!r.ok){if(r.codigo==='SESION'){YO=null;try{localStorage.removeItem('fichaje_token')}catch(e){}}throw new Error(r.error||'No se pudo completar.')}
+    return r}
   try{const r=await api(API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(q)});
     if(q.epin&&q.name){PINS[q.name]=q.epin;savePins()}return r}
   catch(e){if(q.epin&&q.name&&/PIN de empleado|intentos con el PIN|no tiene PIN/.test(e.message)){delete PINS[q.name];savePins();document.querySelectorAll('select[data-pin]').forEach(x=>pinUI(x.id))}throw e}
@@ -151,15 +194,17 @@ function pick(v,lock){
   if(lock){const c=blockFor(v);if(c){msg('#om',resMsg(v,c));return}if($('#om'))$('#om').innerHTML=''}
   S.veh=v;document.querySelectorAll('.seg button[data-v]').forEach(b=>b.classList.toggle('on',b.dataset.v===v));if(S.onPick)S.onPick()}
 /* Desplegable de empleado: "¿Quién eres?" es solo un texto de ejemplo, nunca se puede elegir */
-const nameSel=(id='nm')=>`<select id="${id}" required data-pin onchange="pinUI('${id}')"><option value="" disabled selected>${PLACEHOLDER}</option>${D.names.filter(n=>!NOPE(n)).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')}</select><div id="${id}-p"></div>`;
+const nameSel=(id='nm')=>YO?`<select id="${id}" data-pin style="display:none"><option value="${esc(YO)}" selected>${esc(YO)}</option></select><div class="it" style="margin-top:4px">👤 <b>${esc(YO)}</b><small class="hint" style="margin:0 0 0 6px">· con tu cuenta de Fichaje</small></div><div id="${id}-p"></div>`:`<select id="${id}" required data-pin onchange="pinUI('${id}')"><option value="" disabled selected>${PLACEHOLDER}</option>${D.names.filter(n=>!NOPE(n)).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')}</select><div id="${id}-p"></div>`;
 function pinUI(id){
   const sel=$('#'+id),b=$('#'+id+'-p');if(!sel||!b)return;const n=sel.value;
+  if(YO){b.innerHTML='';return}
   if(!n){b.innerHTML='';return}
   b.innerHTML=PINS[n]?`<small class="hint">🔒 PIN de ${esc(n)} guardado en este móvil · <a href="#" onclick="event.preventDefault();delete PINS['${esc(n).replace(/'/g,"\\'")}'];savePins();pinUI('${id}')">No soy ${esc(n)}</a></small>`
     :`<input type="password" id="${id}-pin" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="Tu PIN personal (4 cifras)" style="margin-top:6px"><small class="hint">Se guardará en este móvil para la próxima vez.</small>`;
 }
 /* Nombre + PIN de quien hace la acción */
 function auth(id){
+  if(YO)return {name:getName(id),epin:'cuenta'};   /* el PIN lo pone el servidor de Fichaje */
   const name=getName(id),i=$('#'+id+'-pin'),p=PINS[name]||(i?i.value.trim():'');
   if(!/^\d{4}$/.test(p)){if(i)i.focus();throw new Error(`Escribe el PIN personal de ${name} (4 cifras).`)}
   return {name,epin:p};
@@ -504,7 +549,7 @@ async function go(t){
   if($('#dlg').open)$('#dlg').close();
   S.tab=VIEWS[t]?t:'llaves';S.onPick=null;document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===S.tab));
   $('#view').innerHTML='<div class="card">Cargando…</div>';
-  try{await load();renderStatus();VIEWS[S.tab]()}
+  try{await load();renderStatus();if(S.tab!=='admin'&&!YO){gate();return}VIEWS[S.tab]()}
   catch(e){$('#view').innerHTML=`<div class="card"><div class="msg e">⚠️ No se pudo conectar: ${esc(e.message)}</div><button class="btn" onclick="go(S.tab)">Reintentar</button></div>`}
 }
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{location.hash===('#'+b.dataset.t)?go(b.dataset.t):location.hash=b.dataset.t});
@@ -513,11 +558,11 @@ addEventListener('hashchange',()=>go(location.hash.slice(1)));
 const tick=()=>{if(!document.hidden&&!S.busy&&!$('#dlg').open)load(true).then(()=>{renderStatus();if(S.tab==='reservar'&&$('#agl')){drawCal();$('#agl').innerHTML=agenda()}}).catch(()=>{})};
 setInterval(tick,60000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)tick()});   /* al volver a la app, se actualiza al momento */
-go(location.hash.slice(1));
+cuentaInit().then(()=>go(location.hash.slice(1)));
 /* ===== App instalable: aviso «Instalar en el móvil» (solo se ve en el navegador, no dentro de la app) ===== */
 (()=>{
   if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
-  if(matchMedia('(display-mode: standalone)').matches||navigator.standalone)return;   /* ya está instalada */
+  if(EMBEBIDA||matchMedia('(display-mode: standalone)').matches||navigator.standalone)return;   /* dentro de Fichaje o ya instalada */
   let no=0;try{no=+localStorage.getItem('instNo')||0}catch(e){}
   if(Date.now()-no<30*864e5)return;   /* si pulsó «Ahora no», no se vuelve a mostrar en 30 días */
   const ua=navigator.userAgent,ios=/iphone|ipad|ipod/i.test(ua)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
