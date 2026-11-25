@@ -80,42 +80,44 @@ const REV_TYPES=['ITV','Revisión taller','Cambio de aceite','Neumáticos','Segu
 const PLACEHOLDER='¿Quién eres?';
 const MAX={ret:5,edit:5,tk:3};
 
-/* ===== Cuenta única con la app de Fichaje: mismo email y PIN para todo =====
-   La app de Fichaje (mismo dominio) deja aquí su sesión. Las acciones de empleado se envían
-   al servidor de Fichaje, que comprueba quién es y las pasa a Coches en su nombre.
-   El panel Admin de Coches no cambia: sigue con su propio PIN de administrador. */
+/* ===== PIN único con la app de Fichaje (el administrador lo activa o desactiva en Fichaje › Admin › Ajustes) =====
+   Activado: cada trabajador elige su nombre y escribe su PIN de 6 cifras de Fichaje. Las acciones se envían al
+   servidor de Fichaje, que comprueba quién es y las hace en Coches en su nombre.
+   Desactivado: Coches funciona como siempre (nombre + PIN de 4 cifras). El Admin de Coches no cambia nunca. */
+const FICHAJE_API_FIJA='https://script.google.com/macros/s/AKfycbzYlA4IpNaVlxscmk_3lNDXTpZqc6c7fsOhbl83gJZ-tcpQuJ6N5JfCRMaVXDwgnHA/exec';   /* dirección /exec del servidor de Fichaje (la de config.js de Fichaje) */
 const EMBEBIDA=/[?&]embebida=1/.test(location.search)||window.top!==window.self;
-/* Opcional: dirección del servidor de Fichaje (la de config.js de Fichaje). Si se rellena, el login funciona
-   aunque se abra Coches directamente (por ejemplo, con el QR en un iPhone) sin haber pasado por Fichaje. */
-const FICHAJE_API_FIJA='';
 const CUENTA={get t(){try{return localStorage.getItem('fichaje_token')}catch(e){return null}},
-  get api(){try{return localStorage.getItem('fichaje_api')||FICHAJE_API_FIJA||null}catch(e){return FICHAJE_API_FIJA||null}},
-  get home(){try{return localStorage.getItem('fichaje_url')}catch(e){return null}}};
-let YO=null,YO_MSG='';
+  get api(){let a=null;try{a=localStorage.getItem('fichaje_api')}catch(e){}a=a||FICHAJE_API_FIJA;return /^https:\/\//.test(a||'')?a:null}};
+let UNICO=false,YO=null,YO_MSG='';
 const fichaje=async q=>{const r=await fetch(CUENTA.api,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(q)});return r.json()};
+const quitarToken=()=>{try{localStorage.removeItem('fichaje_token')}catch(e){}};
 async function cuentaInit(){
-  YO=null;YO_MSG='';if(!CUENTA.t||!CUENTA.api)return;
+  YO=null;YO_MSG='';
+  try{UNICO=localStorage.getItem('coches_unico')==='1'}catch(e){UNICO=false}
+  if(!CUENTA.api){UNICO=false;return}
+  try{const m=await fichaje({action:'cochesModo'});UNICO=!!(m&&m.unico);try{localStorage.setItem('coches_unico',UNICO?'1':'0')}catch(e){}}catch(e){/* sin conexión: se usa el último modo conocido */}
+  if(!UNICO||!CUENTA.t)return;
   try{const r=await fichaje({action:'cochesYo',token:CUENTA.t});
-    if(!r.ok){YO_MSG=r.error||'';if(r.codigo==='SESION'){try{localStorage.removeItem('fichaje_token')}catch(e){}}return}
+    if(!r.ok){YO_MSG=r.error||'';if(r.codigo==='SESION'){quitarToken();YO_MSG=''}if(r.codigo==='PIN_UNICO_OFF'){UNICO=false;YO_MSG=''}return}
     YO=r.nombre||null;YO_MSG=r.mensaje||''}
   catch(e){YO_MSG='No se pudo comprobar tu sesión. Revisa la conexión.'}
 }
+function salirCuenta(){const t=CUENTA.t;if(t)fichaje({action:'logout',token:t}).catch(()=>{});quitarToken();YO=null;YO_MSG='';go(S.tab)}
 function gate(){
   const v=$('#view');
-  if(CUENTA.t&&CUENTA.api&&YO_MSG&&!/sesi[oó]n|conexi[oó]n/i.test(YO_MSG)){
-    v.innerHTML=`<div class="card"><h2 style="margin-top:0">👤 Falta tu nombre en Coches</h2><div class="msg e">${esc(YO_MSG)}</div></div>`;return}
-  if(!CUENTA.api){
-    v.innerHTML=`<div class="card"><h2 style="margin-top:0">🔐 Entra con tu cuenta</h2><p>Abre la app de <b>Fichaje</b>, entra con tu email y PIN y pulsa <b>Coches</b>.</p>${CUENTA.home?`<a class="btn" href="${esc(CUENTA.home)}#coches">Abrir Fichaje</a>`:''}</div>`;return}
-  v.innerHTML=`<div class="card"><h2 style="margin-top:0">🔐 Entra con tu cuenta</h2><small class="hint">El mismo email y PIN que usas para fichar.</small>
+  if(CUENTA.t&&YO_MSG&&!/conexi[oó]n/i.test(YO_MSG)){
+    v.innerHTML=`<div class="card"><h2 style="margin-top:0">👤 Falta tu nombre en Coches</h2><div class="msg e">${esc(YO_MSG)}</div>${EMBEBIDA?'':'<button class="btn o" onclick="salirCuenta()">Entrar con otra persona</button>'}</div>`;return}
+  v.innerHTML=`<div class="card"><h2 style="margin-top:0">🔐 ¿Quién eres?</h2><small class="hint">Elige tu nombre y escribe tu PIN de 6 cifras: el mismo que usas para fichar.</small>
     ${YO_MSG?`<div class="msg e">${esc(YO_MSG)}</div>`:''}
-    <label>Email</label><input id="lg-e" type="email" inputmode="email" autocomplete="username">
-    <label>PIN</label><input id="lg-p" type="password" inputmode="numeric" maxlength="6" autocomplete="current-password">
+    <label>Nombre</label><select id="lg-n"><option value="" disabled selected>${PLACEHOLDER}</option>${D.names.filter(n=>!NOPE(n)).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')}</select>
+    <label>PIN</label><input id="lg-p" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="6 cifras">
     <div id="lgm"></div><button class="btn" onclick="run(this,'#lgm',entrarCuenta)">Entrar</button></div>`;
 }
 async function entrarCuenta(){
-  const e=$('#lg-e').value.trim(),p=$('#lg-p').value.trim();if(!e||!p)throw new Error('Escribe tu email y tu PIN.');
-  const r=await fichaje({action:'login',email:e,pin:p});if(!r.ok)throw new Error(r.error||'Email o PIN incorrectos.');
-  try{localStorage.setItem('fichaje_token',r.token)}catch(x){}
+  const n=$('#lg-n').value,p=$('#lg-p').value.trim();
+  if(!n)throw new Error('Elige tu nombre de la lista.');if(!/^\d{6}$/.test(p))throw new Error('El PIN tiene 6 cifras (el mismo de Fichaje).');
+  const r=await fichaje({action:'loginNombre',nombre:n,pin:p});if(!r.ok)throw new Error(r.error||'PIN incorrecto.');
+  try{localStorage.setItem('fichaje_token',r.token);if(!localStorage.getItem('fichaje_api'))localStorage.setItem('fichaje_api',CUENTA.api)}catch(x){}
   await cuentaInit();go(S.tab);
 }
 
@@ -125,9 +127,9 @@ const api=async(url,opt)=>{if(!/^https:\/\//.test(API_URL))throw new Error('Falt
 let PINS={};try{PINS=JSON.parse(localStorage.getItem('epins')||'{}')}catch(e){}
 const savePins=()=>{try{localStorage.setItem('epins',JSON.stringify(PINS))}catch(e){}};
 const post=async q=>{
-  if(YO&&q.name&&q.epin&&!q.pin){   /* acción de empleado: va por Fichaje con la cuenta única */
+  if(UNICO&&YO&&q.name&&q.epin&&!q.pin){   /* acción de empleado con el PIN único: va por el servidor de Fichaje */
     const r=await fichaje({action:'coches',token:CUENTA.t,q});
-    if(!r.ok){if(r.codigo==='SESION'){YO=null;try{localStorage.removeItem('fichaje_token')}catch(e){}}throw new Error(r.error||'No se pudo completar.')}
+    if(!r.ok){if(r.codigo==='SESION'){YO=null;quitarToken()}if(r.codigo==='PIN_UNICO_OFF'){UNICO=false;YO=null}throw new Error(r.error||'No se pudo completar.')}
     return r}
   try{const r=await api(API_URL,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(q)});
     if(q.epin&&q.name){PINS[q.name]=q.epin;savePins()}return r}
@@ -194,17 +196,17 @@ function pick(v,lock){
   if(lock){const c=blockFor(v);if(c){msg('#om',resMsg(v,c));return}if($('#om'))$('#om').innerHTML=''}
   S.veh=v;document.querySelectorAll('.seg button[data-v]').forEach(b=>b.classList.toggle('on',b.dataset.v===v));if(S.onPick)S.onPick()}
 /* Desplegable de empleado: "¿Quién eres?" es solo un texto de ejemplo, nunca se puede elegir */
-const nameSel=(id='nm')=>YO?`<select id="${id}" data-pin style="display:none"><option value="${esc(YO)}" selected>${esc(YO)}</option></select><div class="it" style="margin-top:4px">👤 <b>${esc(YO)}</b><small class="hint" style="margin:0 0 0 6px">· con tu cuenta de Fichaje</small></div><div id="${id}-p"></div>`:`<select id="${id}" required data-pin onchange="pinUI('${id}')"><option value="" disabled selected>${PLACEHOLDER}</option>${D.names.filter(n=>!NOPE(n)).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')}</select><div id="${id}-p"></div>`;
+const nameSel=(id='nm')=>(UNICO&&YO)?`<select id="${id}" data-pin style="display:none"><option value="${esc(YO)}" selected>${esc(YO)}</option></select><div class="it" style="margin-top:4px">👤 <b>${esc(YO)}</b>${EMBEBIDA?'':' <small class="hint" style="margin:0 0 0 6px"><a href="#" onclick="event.preventDefault();salirCuenta()">No soy yo</a></small>'}</div><div id="${id}-p"></div>`:`<select id="${id}" required data-pin onchange="pinUI('${id}')"><option value="" disabled selected>${PLACEHOLDER}</option>${D.names.filter(n=>!NOPE(n)).map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('')}</select><div id="${id}-p"></div>`;
 function pinUI(id){
   const sel=$('#'+id),b=$('#'+id+'-p');if(!sel||!b)return;const n=sel.value;
-  if(YO){b.innerHTML='';return}
+  if(UNICO&&YO){b.innerHTML='';return}
   if(!n){b.innerHTML='';return}
   b.innerHTML=PINS[n]?`<small class="hint">🔒 PIN de ${esc(n)} guardado en este móvil · <a href="#" onclick="event.preventDefault();delete PINS['${esc(n).replace(/'/g,"\\'")}'];savePins();pinUI('${id}')">No soy ${esc(n)}</a></small>`
     :`<input type="password" id="${id}-pin" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="Tu PIN personal (4 cifras)" style="margin-top:6px"><small class="hint">Se guardará en este móvil para la próxima vez.</small>`;
 }
 /* Nombre + PIN de quien hace la acción */
 function auth(id){
-  if(YO)return {name:getName(id),epin:'cuenta'};   /* el PIN lo pone el servidor de Fichaje */
+  if(UNICO&&YO)return {name:getName(id),epin:'cuenta'};   /* el PIN interno lo pone el servidor de Fichaje */
   const name=getName(id),i=$('#'+id+'-pin'),p=PINS[name]||(i?i.value.trim():'');
   if(!/^\d{4}$/.test(p)){if(i)i.focus();throw new Error(`Escribe el PIN personal de ${name} (4 cifras).`)}
   return {name,epin:p};
@@ -549,7 +551,7 @@ async function go(t){
   if($('#dlg').open)$('#dlg').close();
   S.tab=VIEWS[t]?t:'llaves';S.onPick=null;document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===S.tab));
   $('#view').innerHTML='<div class="card">Cargando…</div>';
-  try{await load();renderStatus();if(S.tab!=='admin'&&!YO){gate();return}VIEWS[S.tab]()}
+  try{await load();renderStatus();if(UNICO&&!YO&&S.tab!=='admin'){gate();return}VIEWS[S.tab]()}
   catch(e){$('#view').innerHTML=`<div class="card"><div class="msg e">⚠️ No se pudo conectar: ${esc(e.message)}</div><button class="btn" onclick="go(S.tab)">Reintentar</button></div>`}
 }
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{location.hash===('#'+b.dataset.t)?go(b.dataset.t):location.hash=b.dataset.t});
